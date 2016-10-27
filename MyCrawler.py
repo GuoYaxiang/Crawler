@@ -4,6 +4,8 @@ import socket
 import urllib.request
 import re
 import zlib
+from optparse import OptionParser
+import logging,doctest
 
 
 class MyCrawler:
@@ -110,11 +112,44 @@ class linkQueue:
         return len(self.unvisited) == 0
     
     
-def main(seeds,crawl_deepth):
-    crawl = MyCrawler(seeds)
-    crawl.crawling(seeds,crawl_deepth)
+def main():
+    uasge = "usage: %prog [options] arg"
+    parser = OptionParser(uasge)
+    parser.add_option("-u","--url",action = "store",dest = "UrlSeed",help = "Specify the origin url of the crawler")
+    parser.add_option("-d","--depth",action = "store",type = "int",dest = "CrawlDepth",help = "Specify the depth of the crawler",default = 2)
+    parser.add_option("-f","--logfile",action = "store",dest = "LogFile",help = "Specify the logfile of the crawler",default = "spider.log")
+    parser.add_option("--thread",action = "store",type = "int",dest = "ThreadPool",help = "Specify the size of the threadpool",default = 10)
+    parser.add_option("--key",action = "store",dest = "KeyWord",help = "Specify the keyword of the crawler",default = "html")
+    parser.add_option("--dbfile",action = "store",dest = "DatabaseFile",help = "Specify the database file of the crawler",default = "spider.db")
+    parser.add_option("-l","--level",action = "store",type = "int",dest = "LogLevel",help = "Specify the level of the logging file",default = 2)
+    parser.add_option("--testself",action = "store_true",dest = "TestSelf",help = "testself")
+    
+    
+    #解析参数
+    [options, args] = parser.parse_args()
+    
+    if options.TestSelf:      #调用testself函数进行测试，全部采用默认值
+        testself()    
+        
+        
+    url_seed = options.UrlSeed
+    crawl_depth = options.CrawlDepth
+    log_file = options.LogFile
+    thread_pool = options.ThreadPool
+    key_word = options.KeyWord
+    database_file = options.DatabaseFile
+    log_level = options.LogLevel
+    
+    
+    #logging模块配置
+    logging.basicConfig(filename = log_file, level = log_level)
+    
+    
+    crawl = MyCrawler(url_seed)
+    crawl.crawling(url_seed,crawl_depth)
     
     
 if __name__ == '__main__':
-    main(["http://www.baidu.com", "http://www.google.com", "http://www.sina.com.cn"],3)
+    #main(["http://www.baidu.com", "http://www.google.com", "http://www.sina.com.cn"],3)
+    main()
         
