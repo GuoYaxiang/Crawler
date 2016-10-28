@@ -3,52 +3,55 @@ from bs4 import BeautifulSoup
 import socket
 import urllib.request
 import re
-import zlib
+import gzip
 from optparse import OptionParser
 import logging,doctest
+import queue
+import threading,sys,time
+import chardet
 
-
+lock = threading.Lock()
 class MyCrawler:
-    def __init__(self,seeds):
-        #初始化当前抓取的深度
-        self.current_deepth = 1
+    def __init__(self,seeds,crawl_depth,thread_num):
+        #初始化抓取的深度
+        self.crawl_depth = crawl_depth
         #利用种子初始化url队列
-        self.linkQueue = linkQueue()
+        self.visited_url = []
+        self.threadpool = ThreadPool(thread_num)
+
         if isinstance(seeds,str):
-            self.linkQueue.addUnvisitedUrl(seeds)
+            self.threadpool.addTask(self.crawling,url = seeds,current_depth = 1)
         if isinstance(seeds,list):
             for i in seeds:
-                self.linkQueue.addUnvisitedUrl(i)
-        print("Add the seeds url '%s' to the unvisited url list" % str(self.linkQueue.unvisited))
-        
+                self.threadpool.addTask(self.crawling,url = i,current_depth = 1)
+        print("Add the seeds url '%s' to the unvisited url list" % str(seeds))
+
+    def work(self):
+        self.threadpool.waitForComplete()
+
     #抓取过程函数
-    def crawling(self,seeds,crawl_deepth):
-        #抓取深度不超过crawl_deepth
-        while self.current_deepth <= crawl_deepth:
-            links = []            
-            while self.linkQueue.unvisited:
-                #队头出列
-                visitUrl = self.linkQueue.unVisitedUrlDequeue()
-                print("Pop out one url '%s' from unvisited url list" % visitUrl)
-                if visitUrl is None or visitUrl=="":
-                    continue
-                
-                #获取超链接
-                links.extend(self.getHyperLinks(visitUrl))
-                print("Get %d new links" % len(links))
-                
-                #将url放入已访问的url中
-                self.linkQueue.addVisitedUrl(visitUrl)
-                print("Visited url count: "+str(self.linkQueue.getVisitedUrlCount()))
-                print("Visited deepth: "+str(self.current_deepth))
-                
+    def crawling(self,url,current_depth):
+        #抓取深度不超过crawl_depth
+        if current_depth <= self.crawl_depth:
+            links = []
+
+            #获取超链接
+            links.extend(self.getHyperLinks(url))
+            print("Get %d new links" % len(links))
+
+            #将url放入已访问的url中
+            self.visited_url.append(url)
+            print("visited url count: "+str(len(self.visited_url)))
+            print("Visited depth: "+str(current_depth))
+
             #未访问的url入列
+            lock.acquire()
             for link in links:
-                self.linkQueue.addUnvisitedUrl(link)
-            print("%d unvisted links:" % len(self.linkQueue.getUnvisitedUrl()))
-            self.current_deepth += 1
-    
-    
+                if (link not in self.visited_url) and (current_depth<self.crawl_depth):
+                    length = self.threadpool.addTask(self.crawling,url = link,current_depth = current_depth+1)
+            lock.release()
+
+
     def getHyperLinks(self,url):
         links = []
         data = self.getPageSource(url)
@@ -59,7 +62,7 @@ class MyCrawler:
                 if i["href"].find("http://") != -1:
                     links.append(i["href"])
         return links
-    
+
     #获取网页源码
     def getPageSource(self,url,timeout=10,coding=None):
         try:
@@ -69,49 +72,82 @@ class MyCrawler:
             resp = urllib.request.urlopen(req)
             page =resp.read()
             if resp.headers.get('Content-Encoding') == 'gzip':
-                page = zlib.decompress(page, 16+zlib.MAX_WBITS)
+                page = gzip.decompress(page)
+            
+            charset = chardet.detect(page)['encoding']
+            print(charset)
+            page = page.decode(charset)
             return ["200",page]
         except Exception as e:
             print(str(e))
             return [str(e),None]
-        
-        
 
-                
-class linkQueue:
-    def __init__(self):
-        self.visited = []
-        self.unvisited = []
-          
-    def getVisitedUrl(self):
-        return self.visited
-    
-    def getUnvisitedUrl(self):
-        return self.unvisited
-    
-    def addVisitedUrl(self,url):
-        self.visited.append(url)
-        
-    def removeVisitedUrl(self,url):
-        self.visited.remove(url)
-        
-    def unVisitedUrlDequeue(self):
+
+class workThread(threading.Thread):
+    def __init__(self,task_queue):
+        threading.Thread.__init__(self)
+        self.task_queue = task_queue
+        self.daemon = True
+        self.start()
+        self.idle = True
+
+    def run(self):
+        sleep_time = 0.01
+        multiply = 1
+        while True:
+            try:
+                func,args,kwargs = self.task_queue.get(block = False)
+                self.idle = False
+                multiply = 1
+
+                func(*args,**kwargs)
+            except queue.Empty:
+                time.sleep(sleep_time*multiply)
+                self.idle = True
+                multiply *= 2
+                continue
+            except:
+                print(sys.exc_info())
+                raise
+
+class ThreadPool:
+    def __init__(self,thread_num,max_queue_len = 1000):
+        self.max_queue_len = max_queue_len
+        self.task_queue = queue.Queue(max_queue_len)
+        self.threads = []
+        self.__createPool(thread_num)
+
+    def __createPool(self,thread_num):
+        for i in range(thread_num):
+            thread = workThread(self.task_queue)
+            self.threads.append(thread)
+
+    def addTask(self,func,*args,**kwargs):
+        '''
+           添加一个任务，返回任务等待队列的长度
+        '''
         try:
-            return self.unvisited.pop()
-        except:
-            return None
-        
-    def addUnvisitedUrl(self,url):
-        if url != "" and url not in self.visited and url not in self.unvisited:
-            self.unvisited.insert(0,url)
-            
-    def getVisitedUrlCount(self):
-        return len(self.visited)
-    
-    def getUnvisitedUrlCount(self):
-        return len(self.unvisited) == 0
-    
-    
+            self.task_queue.put((func,args,kwargs))
+        except queue.Full:
+            raise   #队列已满，抛出异常
+        return self.task_queue.qsize()
+
+    def waitForComplete(self):
+        while not self.task_queue.empty():
+            time.sleep(2)
+
+        while True:
+            all_idle = True
+            for th in self.threads:
+                if not th.idle:
+                    all_idle = False
+                    break
+            if all_idle:
+                break
+            else:
+                time.sleep(1)
+
+
 def main():
     uasge = "usage: %prog [options] arg"
     parser = OptionParser(uasge)
@@ -123,33 +159,34 @@ def main():
     parser.add_option("--dbfile",action = "store",dest = "DatabaseFile",help = "Specify the database file of the crawler",default = "spider.db")
     parser.add_option("-l","--level",action = "store",type = "int",dest = "LogLevel",help = "Specify the level of the logging file",default = 2)
     parser.add_option("--testself",action = "store_true",dest = "TestSelf",help = "testself")
-    
-    
+
+
     #解析参数
     [options, args] = parser.parse_args()
-    
+
     if options.TestSelf:      #调用testself函数进行测试，全部采用默认值
-        testself()    
-        
-        
+        testself()
+
+
     url_seed = options.UrlSeed
     crawl_depth = options.CrawlDepth
     log_file = options.LogFile
-    thread_pool = options.ThreadPool
+    thread_num = options.ThreadPool
     key_word = options.KeyWord
     database_file = options.DatabaseFile
     log_level = options.LogLevel
-    
-    
+
+
     #logging模块配置
     logging.basicConfig(filename = log_file, level = log_level)
-    
-    
-    crawl = MyCrawler(url_seed)
-    crawl.crawling(url_seed,crawl_depth)
-    
-    
+
+
+    crawl = MyCrawler(url_seed,crawl_depth,thread_num)
+    crawl.work()
+    #crawl.crawling(url_seed,crawl_depth)
+
+
 if __name__ == '__main__':
     #main(["http://www.baidu.com", "http://www.google.com", "http://www.sina.com.cn"],3)
     main()
-        
+
